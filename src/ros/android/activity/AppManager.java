@@ -35,219 +35,158 @@ package ros.android.activity;
 
 import java.util.ArrayList;
 
-import org.ros.exception.RemoteException;
+import android.util.Log;
+
 import org.ros.exception.RosException;
-import org.ros.internal.node.xmlrpc.XmlRpcTimeoutException;
+import org.ros.exception.RosRuntimeException;
+import org.ros.exception.ServiceNotFoundException;
 import org.ros.message.MessageListener;
 import org.ros.namespace.GraphName;
 import org.ros.namespace.NameResolver;
+import org.ros.node.AbstractNodeMain;
 import org.ros.node.ConnectedNode;
 import org.ros.node.service.ServiceClient;
 import org.ros.node.service.ServiceResponseListener;
 import org.ros.node.topic.Subscriber;
 
-import android.util.Log;
-import app_manager.App;
-import app_manager.AppInstallationState;
 import app_manager.AppList;
-import app_manager.GetAppDetailsRequest;
-import app_manager.GetAppDetailsResponse;
-import app_manager.GetInstallationStateRequest;
-import app_manager.GetInstallationStateResponse;
-import app_manager.InstallAppRequest;
-import app_manager.InstallAppResponse;
+import app_manager.ListApps;
 import app_manager.ListAppsRequest;
 import app_manager.ListAppsResponse;
+import app_manager.StartApp;
 import app_manager.StartAppRequest;
 import app_manager.StartAppResponse;
+import app_manager.StopApp;
 import app_manager.StopAppRequest;
 import app_manager.StopAppResponse;
-import app_manager.UninstallAppRequest;
-import app_manager.UninstallAppResponse;
 
 /**
- * Interact with a remote ROS App Manager.
- * 
- * @author kwc@willowgarage.com (Ken Conley)
+ * @author murase@jsk.imi.i.u-tokyo.ac.jp (Kazuto Murase)
  */
-public class AppManager {
-	static public final String PACKAGE = "ros.android.activity";
+public class AppManager extends AbstractNodeMain {
 
-	private final ConnectedNode node;
-	private AppList appList;
-	private ArrayList<Subscriber> subscriptions;
+	static public final String PACKAGE = "org.ros.android";
+	private static final String startTopic = "start_app";
+	private static final String stopTopic = "stop_app";
+	private static final String listTopic = "list_apps";
+
+	private String appName;
 	private NameResolver resolver;
+	private ServiceResponseListener<StartAppResponse> startServiceResponseListener;
+	private ServiceResponseListener<StopAppResponse> stopServiceResponseListener;
+	private ServiceResponseListener<ListAppsResponse> listServiceResponseListener;
+	private ArrayList<Subscriber<AppList>> subscriptions;
+	private Subscriber<AppList> subscriber;
+	
+	private ConnectedNode connectedNode;
+	private String function = null;
 
-	public interface TerminationCallback {
-		public void onAppTermination();
-	}
-
-	private class TerminationCallbackInfo {
-		public TerminationCallback callback;
-		public String appname;
-
-		public TerminationCallbackInfo(String appname, TerminationCallback callback) {
-			this.appname = appname;
-			this.callback = callback;
-		}
-	}
-
-	private ArrayList<TerminationCallbackInfo> terminationCallbacks;
-
-	public AppManager(ConnectedNode node, NameResolver resolver) throws RosException {
-		this.node = node;
+	public AppManager(final String appName, NameResolver resolver) {
+		this.appName = appName;
 		this.resolver = resolver;
-		subscriptions = new ArrayList<Subscriber>();
-		terminationCallbacks = new ArrayList<TerminationCallbackInfo>();
-		addAppListCallback(new MessageListener<AppList>() {
-			@Override
-			public void onNewMessage(AppList message) {
-				if(appList != null) {
-					for(App a : appList.getRunningApps()) {
-						boolean stillRunning = false;
-						for(App b : message.getRunningApps()) {
-							if(b.getName().equals(a.getName())) {
-								stillRunning = true;
-							}
-						}
-						if(!stillRunning) {
-							Log.i("AppManager", "Terminate application: " + a.getName());
-							for(TerminationCallbackInfo c : terminationCallbacks) {
-								if(c.appname == null) {
-									Log.i("AppManager", "Terminate callback called");
-									c.callback.onAppTermination();
-								} else if(c.appname.equals(a.getName())) {
-									Log.i("AppManager", "Terminate callback called");
-									c.callback.onAppTermination();
-								}
-							}
-						}
-					}
-				}
-				appList = message;
-			}
-		});
+	}
+
+	public AppManager(final String appName) {
+		this.appName = appName;
+	}
+
+	public AppManager() {
 
 	}
 
-	public void addTerminationCallback(String appname, TerminationCallback callback) {
-		terminationCallbacks.add(new TerminationCallbackInfo(appname, callback));
+	public void addAppListCallback(MessageListener<AppList> callback)
+			throws RosException {
+		subscriber = connectedNode.newSubscriber(resolver.resolve("app_list"),"app_manager/AppList");
+		subscriber.addMessageListener(callback);
 	}
 
-	public void addAppListCallback(MessageListener<AppList> callback) throws RosException {
-		Subscriber<AppList> s = node.newSubscriber(resolver.resolve("app_list"), "app_manager/AppList");
-		s.addMessageListener(callback);
-		subscriptions.add(s);
+	public void setFunction(String function) {
+		this.function = function;
+	}
+	
+	public void setAppName(String appName) {
+		this.appName = appName;
 	}
 
-	public void addExchangeListCallback(MessageListener<AppInstallationState> callback) throws RosException {
-		Subscriber<AppInstallationState> s = node.newSubscriber(resolver.resolve("exchange_app_list"), "app_manager/AppInstallationState");
-		s.addMessageListener(callback);
-		subscriptions.add(s);
+	public void setStartService(
+			ServiceResponseListener<StartAppResponse> startServiceResponseListener) {
+		this.startServiceResponseListener = startServiceResponseListener;
 	}
 
-	public AppList getAppList() {
-		return appList;
+	public void setStopService(
+			ServiceResponseListener<StopAppResponse> stopServiceResponseListener) {
+		this.stopServiceResponseListener = stopServiceResponseListener;
 	}
 
-	private final org.ros.internal.node.response.StatusCode ERROR_STATUS = org.ros.internal.node.response.StatusCode.ERROR;
+	public void setListService(
+			ServiceResponseListener<ListAppsResponse> listServiceResponseListener) {
+		this.listServiceResponseListener = listServiceResponseListener;
+	}
 
-	public void listApps(final ServiceResponseListener<ListAppsResponse> callback) {
+	public void startApp() {
+		String startTopic = resolver.resolve(this.startTopic).toString();
+
+		ServiceClient<StartAppRequest, StartAppResponse> startAppClient;
 		try {
-			ServiceClient<ListAppsRequest, ListAppsResponse> listAppsClient = node.newServiceClient(resolver.resolve("list_apps"), "app_manager/ListApps");
-			listAppsClient.call(listAppsClient.newMessage(), callback);
-		} catch(Throwable ex) {
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
+			Log.i("RosAndroid", "Start app service client created");
+			startAppClient = connectedNode.newServiceClient(startTopic,
+					StartApp._TYPE);
+		} catch (ServiceNotFoundException e) {
+			throw new RosRuntimeException(e);
 		}
+		final StartAppRequest request = startAppClient.newMessage();
+		request.setName(appName);
+		startAppClient.call(request, startServiceResponseListener);
+		Log.i("RosAndroid", "Done call");
 	}
 
-	public void listExchangeApps(boolean remoteUpdate, final ServiceResponseListener<GetInstallationStateResponse> callback) {
+	public void stopApp() {
+		String stopTopic = resolver.resolve(this.stopTopic).toString();
+
+		ServiceClient<StopAppRequest, StopAppResponse> stopAppClient;
 		try {
-			ServiceClient<GetInstallationStateRequest, GetInstallationStateResponse> listAppsClient = node.newServiceClient(resolver.resolve("list_exchange_apps"), "app_manager/GetInstallationState");
-			GetInstallationStateRequest request = listAppsClient.newMessage();
-			request.setRemoteUpdate(remoteUpdate);
-			listAppsClient.call(request, callback);
-		} catch(Throwable ex) {
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
+			Log.i("RosAndroid", "Stop app service client created");
+			stopAppClient = connectedNode.newServiceClient(stopTopic,
+					StopApp._TYPE);
+		} catch (ServiceNotFoundException e) {
+			throw new RosRuntimeException(e);
 		}
+		final StopAppRequest request = stopAppClient.newMessage();
+		request.setName(appName);
+		stopAppClient.call(request, stopServiceResponseListener);
+		Log.i("RosAndroid", "Done call");
 	}
 
-	public void startApp(final String appName, final ServiceResponseListener<StartAppResponse> callback) {
-		try{
-			ServiceClient<StartAppRequest, StartAppResponse> startAppClient = node.newServiceClient(resolver.resolve("start_app"), "app_manager/StartApp");
-			Log.i("AppManager", "Start app service client created");
-			StartAppRequest request = startAppClient.newMessage();
-			request.setName(appName);
-			startAppClient.call(request, callback);
-			Log.i("AppManager", "Done call");
-		} catch(Throwable ex) {
-			Log.i("AppManager", "Start apps failed: " + ex.toString());
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
-		}
-	}
-
-	public void getAppDetails(final String appName, final ServiceResponseListener<GetAppDetailsResponse> callback) {
+	public void listApps() {
+		String listTopic = resolver.resolve(this.listTopic).toString();
+		
+		ServiceClient<ListAppsRequest, ListAppsResponse> listAppsClient;
 		try {
-			ServiceClient<GetAppDetailsRequest, GetAppDetailsResponse> startAppClient = node.newServiceClient(resolver.resolve("get_app_details"), "app_manager/GetAppDetails");
-			Log.i("AppManager", "Start app service client created");
-			GetAppDetailsRequest request = startAppClient.newMessage();
-			request.setName(appName);
-			startAppClient.call(request, callback);
-			Log.i("AppManager", "Done call");
-		} catch(Throwable ex) {
-			Log.i("AppManager", "Get app details failed: " + ex.toString());
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
+			Log.i("RosAndroid", "List app service client created" + listTopic);
+			listAppsClient = connectedNode.newServiceClient(listTopic,
+					ListApps._TYPE);
+		} catch (ServiceNotFoundException e) {
+			throw new RosRuntimeException(e);
 		}
+		final ListAppsRequest request = listAppsClient.newMessage();
+		listAppsClient.call(request, listServiceResponseListener);
+		Log.i("RosAndroid", "Done call");
 	}
 
-	public void stopApp(final String appName, final ServiceResponseListener<StopAppResponse> callback) {
-		try {
-			ServiceClient<StopAppRequest, StopAppResponse> stopAppClient = node.newServiceClient(resolver.resolve("stop_app"), "app_manager/StopApp");
-			StopAppRequest request = stopAppClient.newMessage();
-			request.setName(appName);
-			stopAppClient.call(request, callback);
-		} catch(Throwable ex) {
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
-		}
+	@Override
+	public GraphName getDefaultNodeName() {
+		return null;
 	}
 
-	public void installApp(final String appName, final ServiceResponseListener<InstallAppResponse> callback) {
-		try {
-			ServiceClient<InstallAppRequest, InstallAppResponse> installAppClient = node.newServiceClient(resolver.resolve("install_app"), "app_manager/InstallApp");
-			InstallAppRequest request = installAppClient.newMessage();
-			request.setName(appName);
-			installAppClient.call(request, callback);
-		} catch(Throwable ex) {
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
-		}
-	}
-
-	public void uninstallApp(final String appName, final ServiceResponseListener<UninstallAppResponse> callback) {
-		try {
-			ServiceClient<UninstallAppRequest, UninstallAppResponse> uninstallAppClient = node.newServiceClient(resolver.resolve("uninstall_app"), "app_manager/UninstallApp");
-			UninstallAppRequest request = uninstallAppClient.newMessage();
-			request.setName(appName);
-			uninstallAppClient.call(request, callback);
-		} catch(Throwable ex) {
-			callback.onFailure(new RemoteException(ERROR_STATUS, ex.toString()));
-		}
-	}
-
-	/**
-	 * Blocks until App Manager is located.
-	 * 
-	 * @param node
-	 * @param robotName
-	 * @return
-	 * @throws AppManagerNotAvailableException
-	 * @throws RosException
-	 */
-	public static AppManager create(ConnectedNode node, String robotName) throws XmlRpcTimeoutException, AppManagerNotAvailableException, RosException {
-		NameResolver resolver = node.getResolver().newChild(GraphName.of(robotName));
-		try {
-			return new AppManager(node, resolver);
-		} catch(java.lang.RuntimeException ex) {
-			throw new AppManagerNotAvailableException(ex);
+	@Override
+	public void onStart(final ConnectedNode connectedNode) {
+		this.connectedNode = connectedNode;
+		if (function.equals("start")) {
+			startApp();
+		} else if (function.equals("stop")) {
+			stopApp();
+		} else if (function.equals("list")) {
+			listApps();
 		}
 	}
 }

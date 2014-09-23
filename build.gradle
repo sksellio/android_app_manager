@@ -21,7 +21,16 @@ task wrapper(type: Wrapper) {
 allprojects {
   group 'ros.android_app_manager'
   version = '0.0.0-SNAPSHOT'
+  /* apply plugin: 'java'
+  apply plugin: 'osgi'
+  apply plugin: 'eclipse'
+  apply plugin: 'maven'
+  sourceCompatibility = 1.6
+  targetCompatibility = 1.6 */
+
 }
+
+
 
 repositories {
   mavenLocal()
@@ -31,7 +40,7 @@ repositories {
 configurations.add('compile') {
   exclude group: 'junit'
   exclude group: 'xml-apis'
-}
+} 
 
 task deployLibs(type: Copy) {
   from { configurations.compile }
@@ -51,3 +60,9 @@ task debug(type: Exec) {
   dependsOn deployLibs
   commandLine 'ant', 'debug'
 }
+/* jar {
+  manifest {
+   version = '0.0.0-SNAPSHOT'
+   symbolicName = 'ros.android_app_manager'
+  }
+} */

@@ -33,256 +33,346 @@
 
 package ros.android.activity;
 
-import ros.android.activity.RosActivity;
-import org.ros.exception.RemoteException;
-import org.ros.exception.RosException;
-import org.ros.internal.node.xmlrpc.XmlRpcTimeoutException;
-import org.ros.namespace.GraphName;
-import org.ros.namespace.NameResolver;
-import org.ros.node.ConnectedNode;
-import org.ros.node.Node;
-import org.ros.node.NodeMainExecutor;
-import org.ros.node.service.ServiceResponseListener;
+//package ros.android.activity;
 
-import ros.android.util.Dashboard;
-import ros.android.util.RobotDescription;
+import java.net.URI;
+import java.net.URISyntaxException;
+
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.DialogInterface;
+import android.content.Intent;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
-import android.widget.Toast;
-import app_manager.StartApp;
+
+import org.ros.address.InetAddressFactory;
+import org.ros.android.RosActivity;
+import org.ros.exception.RemoteException;
+import org.ros.exception.RosRuntimeException;
+import org.ros.namespace.GraphName;
+import org.ros.namespace.NameResolver;
+import org.ros.node.NodeConfiguration;
+import org.ros.node.NodeMainExecutor;
+import org.ros.node.service.ServiceResponseListener;
+
 import app_manager.StartAppResponse;
+import app_manager.StopAppResponse;
+
+import ros.android.util.Dashboard;
+import ros.android.activity.AppManager;
+import ros.android.util.RobotDescription;
+import ros.android.activity.RobotNameResolver;
 
 /**
- * Activity for Android that acts as a client for an external ROS app.
- * 
- * @author kwc@willowgarage.com (Ken Conley)
+ * @author murase@jsk.imi.i.u-tokyo.ac.jp (Kazuto Murase)
  */
-public class RosAppActivity extends RosActivity {
-	protected AppManager appManager;
+public abstract class RosAppActivity extends RosActivity {
 
+	public static final String ROBOT_DESCRIPTION_EXTRA = "ros.android.activity.RobotDescription";
+	private String robotAppName = null;
+	private String defaultAppName = null;
+	private String defaultRobotName = null;
+	private boolean startApplication = true;
+	private boolean fromAppChooser = false;
+	private boolean keyBackTouched = false;
 	private int dashboardResourceId = 0;
 	private int mainWindowId = 0;
-	private String robotAppName = null, defaultAppName = null;
 	private Dashboard dashboard = null;
-	private boolean startApplication = true;
-	private boolean applicationStarted = false;
+	private NodeConfiguration nodeConfiguration;
+	private NodeMainExecutor nodeMainExecutor;
+	private URI uri;
+	private ProgressDialog startingDialog;
+	protected RobotNameResolver robotNameResolver;
+	protected RobotDescription robotDescription;
+	protected boolean fromApplication = false;
 
-	protected void setDashboardResource(int r) {
-		dashboardResourceId = r;
+	protected void setDashboardResource(int resource) {
+		dashboardResourceId = resource;
 	}
 
-	protected void setMainWindowResource(int r) {
-		mainWindowId = r;
+	protected void setMainWindowResource(int resource) {
+		mainWindowId = resource;
+	}
+
+	protected void setDefaultRobotName(String name) {
+		defaultRobotName = name;
 	}
 
 	protected void setDefaultAppName(String name) {
-		if(name == null) {
+		if (name == null) {
 			startApplication = false;
 		}
 		defaultAppName = name;
 	}
 
-	private AppManager createAppManagerCb(ConnectedNode node, RobotDescription robotDescription) throws RosException, XmlRpcTimeoutException, AppManagerNotAvailableException {
-		// TODO: prevent connecting to app manager of unknown robots
-		if(robotDescription == null) {
-			throw new RosException("no robot available");
-		} else {
-			Log.i("RosAndroid", "Using Robot: " + robotDescription.getRobotName() + " " + robotDescription.getRobotId().toString());
-			return AppManager.create(node, robotDescription.getRobotName());
-		}
+	protected void setCustomDashboardPath(String path) {
+		dashboard.setCustomDashboardPath(path);
 	}
 
-	/** Called when the activity is first created. */
+	protected RosAppActivity(String notificationTicker, String notificationTitle) {
+		super(notificationTicker, notificationTitle);
+	}
+
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
-		if(dashboardResourceId == 0) {
-			Log.e("RosAndroid", "You must set the dashboard resource ID in your RosAppActivity");
+
+		if (mainWindowId == 0) {
+			Log.e("RosAndroid",
+					"You must set the dashboard resource ID in your RosAppActivity");
 			return;
 		}
-		if(mainWindowId == 0) {
-			Log.e("RosAndroid", "You must set the dashboard resource ID in your RosAppActivity");
-			return;
-		}
-		if(defaultAppName == null && startApplication) {
-			Log.e("RosAndroid", "You must set the default app name in your RosAppActivity");
+		if (dashboardResourceId == 0) {
+			Log.e("RosAndroid",
+					"You must set the dashboard resource ID in your RosAppActivity");
 			return;
 		}
 
 		requestWindowFeature(Window.FEATURE_NO_TITLE);
-		getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+		getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+				WindowManager.LayoutParams.FLAG_FULLSCREEN);
 		setContentView(mainWindowId);
 
-		robotAppName = getIntent().getStringExtra(AppManager.PACKAGE + ".robot_app_name");
-		if(robotAppName == null) {
+		robotNameResolver = new RobotNameResolver();
+
+		if (defaultRobotName != null) {
+			robotNameResolver.setRobotName(defaultRobotName);
+		}
+
+		robotAppName = getIntent().getStringExtra(
+				AppManager.PACKAGE + ".robot_app_name");
+		if (robotAppName == null) {
 			robotAppName = defaultAppName;
+		} else if (robotAppName.equals("AppChooser")) {
+			fromApplication = true;
+		} else {
+			fromAppChooser = true;
+			startingDialog = ProgressDialog.show(this, "Starting Robot",
+					"starting robot...", true, false);
+			startingDialog.setProgressStyle(ProgressDialog.STYLE_SPINNER);
 		}
 
-		if(dashboard == null) {
+		if (dashboard == null) {
 			dashboard = new Dashboard(this);
-			dashboard.setView((LinearLayout) findViewById(dashboardResourceId), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
+			dashboard.setView((LinearLayout) findViewById(dashboardResourceId),
+					new LinearLayout.LayoutParams(
+							LinearLayout.LayoutParams.WRAP_CONTENT,
+							LinearLayout.LayoutParams.WRAP_CONTENT));
 		}
+
 	}
 
-	protected NameResolver getAppNamespace(Node node) throws RosException {
-		RobotDescription robotDescription = getCurrentRobot();
-		if(robotDescription == null) {
-			throw new RosException("no robot available");
+	@Override
+	protected void init(NodeMainExecutor nodeMainExecutor) {
+		this.nodeMainExecutor = nodeMainExecutor;
+		nodeConfiguration = NodeConfiguration.newPublic(InetAddressFactory
+				.newNonLoopback().getHostAddress(), getMasterUri());
+
+		if (getIntent().hasExtra(ROBOT_DESCRIPTION_EXTRA)) {
+			robotDescription = (RobotDescription) getIntent()
+					.getSerializableExtra(ROBOT_DESCRIPTION_EXTRA);
 		}
-		NameResolver resolver = node.getResolver();
-		GraphName name = GraphName.of(robotDescription.getRobotName());
-		GraphName apps = name.join(GraphName.of("application"));
-		return resolver.newChild(apps);
+		if (robotDescription != null) {
+			if (fromAppChooser) {
+				robotNameResolver.setRobot(robotDescription);
+			}
+			dashboard.setRobotName(robotDescription.getRobotType());
+		} else {
+			dashboard.setRobotName(getRobotNameSpace().getNamespace()
+					.toString());
+		}		
+		nodeMainExecutor.execute(robotNameResolver,
+				nodeConfiguration.setNodeName("robotNameResolver"));
+		while (getAppNameSpace() == null) {
+			try {
+				Thread.sleep(100);
+			} catch (Exception e) {
+			}
+		}
+		
+		nodeMainExecutor.execute(dashboard,
+				nodeConfiguration.setNodeName("dashboard"));
+
+	
+		if (fromAppChooser && startApplication) {
+			if (getIntent().getBooleanExtra("runningNodes", false)) {
+				restartApp();
+			} else
+				startApp();
+		} else if (startApplication) {
+			startApp();
+		}
+	}
+	
+
+	protected NameResolver getAppNameSpace() {
+		return robotNameResolver.getAppNameSpace();
 	}
 
-	private ProgressDialog progress;
+	protected NameResolver getRobotNameSpace() {
+		return robotNameResolver.getRobotNameSpace();
+	}
 
 	protected void onAppTerminate() {
 		RosAppActivity.this.runOnUiThread(new Runnable() {
 			@Override
 			public void run() {
-				new AlertDialog.Builder(RosAppActivity.this).setTitle("App Termination").setMessage("The application has terminated on the server, so the client is exiting.").setCancelable(false).setNeutralButton("Exit", new DialogInterface.OnClickListener() {
-					public void onClick(DialogInterface dialog, int which) {
-						RosAppActivity.this.finish();
-					}
-				}).create().show();
+				new AlertDialog.Builder(RosAppActivity.this)
+						.setTitle("App Termination")
+						.setMessage(
+								"The application has terminated on the server, so the client is exiting.")
+						.setCancelable(false)
+						.setNeutralButton("Exit",
+								new DialogInterface.OnClickListener() {
+									public void onClick(DialogInterface dialog,
+											int which) {
+										RosAppActivity.this.finish();
+									}
+								}).create().show();
 			}
 		});
 	}
 
-	
-	
-	protected void onNodeCreate(ConnectedNode node) {
-		Log.i("RosAndroid", "RosAppActivity.onNodeCreate");
-		super.onNodeCreate(node);
-		RobotDescription robotDescription = getCurrentRobot();
-		try {
-			appManager = createAppManagerCb(node, robotDescription);
-		} catch(RosException e) {
-			Log.e("RosAndroid", "ros init failed", e);
-			appManager = null;
-		} catch(XmlRpcTimeoutException e) {
-			Log.e("RosAndroid", "ros init failed", e);
-			appManager = null;
-		} catch(AppManagerNotAvailableException e) {
-			Log.e("RosAndroid", "ros init failed", e);
-			appManager = null;
-		}
-		if(appManager != null && startApplication) {
-			appManager.addTerminationCallback(robotAppName, new AppManager.TerminationCallback() {
-				@Override
-				public void onAppTermination() {
-					RosAppActivity.this.onAppTerminate();
-				}
-			});
-		}
-		try {
-			// Start up the application on the robot and start the dashboard.
-			dashboard.start(node);
-			if(startApplication && false) {
-				applicationStarted = false;
-				startApp();
-				runOnUiThread(new Runnable() {
-					@Override
-					public void run() {
-						if(progress != null) {
-							progress.dismiss();
-						}
-						progress = ProgressDialog.show(RosAppActivity.this, "Starting...", "Starting application...", true, false);
-						progress.setProgressStyle(ProgressDialog.STYLE_SPINNER);
-					}
-				});
-				try {
-					while(!applicationStarted) {
-						Thread.sleep(100);
-					}
-				} catch(java.lang.InterruptedException e) {
-					Log.i("RosAndroid", "Caught interrupted exception while spinning");
-				}
-				runOnUiThread(new Runnable() {
-					@Override
-					public void run() {
-						if(progress != null) {
-							progress.dismiss();
-						}
-						progress = null;
-					}
-				});
-			} else {
-				Log.i("RosAndroid", "Not starting application");
+	@Override
+	public void startMasterChooser() {
+		if (!fromAppChooser && !fromApplication) {
+			super.startMasterChooser();
+		} else {
+			Intent intent = new Intent();
+			intent.putExtra(AppManager.PACKAGE + ".robot_app_name",
+					"AppChooser");
+			try {
+				uri = new URI(getIntent().getStringExtra("ChooserURI"));
+			} catch (URISyntaxException e) {
+				throw new RosRuntimeException(e);
 			}
-		} catch(Exception ex) {
-			Log.e("$rootclass", "Init error: " + ex.toString());
-			safeToastStatus("Failed: " + ex.getMessage());
+
+			nodeMainExecutorService.setMasterUri(uri);
+			new AsyncTask<Void, Void, Void>() {
+				@Override
+				protected Void doInBackground(Void... params) {
+					RosAppActivity.this.init(nodeMainExecutorService);
+					return null;
+				}
+			}.execute();
 		}
 
 	}
 
-	
+	private void restartApp() {
+		Log.i("RosAndroid", "Restarting application");
+		AppManager appManager = new AppManager("*", getRobotNameSpace());
+		appManager.setFunction("stop");
+
+		appManager
+				.setStopService(new ServiceResponseListener<StopAppResponse>() {
+					@Override
+					public void onSuccess(StopAppResponse message) {
+						Log.i("RosAndroid", "App stopped successfully");
+						try {
+							Thread.sleep(1000);
+						} catch (Exception e) {
+
+						}
+						startApp();
+					}
+
+					@Override
+					public void onFailure(RemoteException e) {
+						Log.e("RosAndroid", "App failed to stop!");
+					}
+				});
+		nodeMainExecutor.execute(appManager,
+				nodeConfiguration.setNodeName("start_app"));
+
+	}
+
+	private void startApp() {
+		Log.i("RosAndroid", "Starting application");
+
+		AppManager appManager = new AppManager(robotAppName,
+				getRobotNameSpace());
+		appManager.setFunction("start");
+
+		appManager
+				.setStartService(new ServiceResponseListener<StartAppResponse>() {
+					@Override
+					public void onSuccess(StartAppResponse message) {
+						if (message.getStarted()) {
+							if (fromAppChooser == true) {
+								startingDialog.dismiss();
+							}
+							Log.i("RosAndroid", "App started successfully");
+						} else
+							Log.e("RosAndroid", "App failed to start!");
+					}
+
+					@Override
+					public void onFailure(RemoteException e) {
+						Log.e("RosAndroid", "App failed to start!");
+					}
+				});
+
+		nodeMainExecutor.execute(appManager,
+				nodeConfiguration.setNodeName("start_app"));
+	}
+
+	protected void stopApp() {
+		Log.i("RosAndroid", "Stopping application");
+		AppManager appManager = new AppManager(robotAppName,
+				getRobotNameSpace());
+		appManager.setFunction("stop");
+
+		appManager
+				.setStopService(new ServiceResponseListener<StopAppResponse>() {
+					@Override
+					public void onSuccess(StopAppResponse message) {
+						Log.i("RosAndroid", "App stopped successfully");
+					}
+
+					@Override
+					public void onFailure(RemoteException e) {
+						Log.e("RosAndroid", "App failed to stop!");
+					}
+				});
+		nodeMainExecutor.execute(appManager,
+				nodeConfiguration.setNodeName("start_app"));
+	}
+
+	protected void releaseRobotNameResolver() {
+		nodeMainExecutor.shutdownNodeMain(robotNameResolver);
+	}
+
+	protected void releaseDashboardNode() {
+		nodeMainExecutor.shutdownNodeMain(dashboard);
+	}
+
 	@Override
 	protected void onDestroy() {
-		if(dashboard != null) {
-			dashboard.stop();
+		if (startApplication && !keyBackTouched) {
+			stopApp();
 		}
-		appManager = null;
 		super.onDestroy();
 	}
 
-	/** Starts the application on the robot. Calls the service with the name */
-	private void startApp() {
-		Log.i("RosAndroid", "Starting application");
-		appManager.startApp(robotAppName, new ServiceResponseListener<StartAppResponse>() {
-			@Override
-			public void onSuccess(StartAppResponse message) {
-				Log.i("RosAndroid", "App started successfully");
-				RosAppActivity.this.applicationStarted = true;
-				runOnUiThread(new Runnable() {
-					@Override
-					public void run() {
-						if(progress != null) {
-							progress.dismiss();
-						}
-						progress = null;
-					}
-				});
-			}
-
-			@Override
-			public void onFailure(RemoteException e) {
-				Log.e("RosAndroid", "App failed to start!");
-				runOnUiThread(new Runnable() {
-					@Override
-					public void run() {
-						if(progress != null) {
-							progress.dismiss();
-						}
-						progress = null;
-						new AlertDialog.Builder(RosAppActivity.this).setTitle("Failed").setCancelable(false).setNeutralButton("Ok", new DialogInterface.OnClickListener() {
-							public void onClick(DialogInterface dialog, int which) {
-								android.os.Process.killProcess(android.os.Process.myPid());
-							}
-						}).setMessage("The application failed to load").create();
-					}
-				});
-			}
-		});
+	@Override
+	public void onBackPressed() {
+		if (fromAppChooser) {
+			keyBackTouched = true;
+			Intent intent = new Intent();
+			intent.putExtra(AppManager.PACKAGE + ".robot_app_name",
+					"AppChooser");
+			intent.putExtra("ChooserURI", uri.toString());
+			intent.setAction("org.ros.android.android_app_chooser.AppChooser");
+			intent.addCategory("android.intent.category.DEFAULT");
+			startActivity(intent);
+			onDestroy();
+		}
+		super.onBackPressed();
 	}
-
-	/** Displays a status tip at the bottom of the screen from any thread. */
-	protected void safeToastStatus(final String message) {
-		runOnUiThread(new Runnable() {
-			@Override
-			public void run() {
-				Toast.makeText(RosAppActivity.this, message, Toast.LENGTH_SHORT).show();
-			}
-		});
-	}
-
 }
