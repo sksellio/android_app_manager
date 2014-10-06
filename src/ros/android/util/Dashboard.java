@@ -23,8 +23,9 @@ public class Dashboard implements NodeMain {
 		public void onShutdown(Node node);
 	}
 
-	private static final String turtlebotDashboardPath = "com.ros.turtlebot.apps.core_components.TurtlebotDashboard";
-	private static final String pr2DashboardPath = "com.ros.pr2.apps.core_components.Pr2Dashboard";
+	private static final String turtlebotDashboardPath = "ros.android.views.TurtlebotDashboard";
+	//private static final String pr2DashboardPath = "com.ros.pr2.apps.core_components.Pr2Dashboard";
+	private static final String pr2DashboardPath = "ros.android.views.Pr2Dashboard";
 
 	private DashboardInterface dashboard;
 	private Activity activity;

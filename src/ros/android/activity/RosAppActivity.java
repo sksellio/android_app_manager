@@ -73,7 +73,7 @@ import ros.android.activity.RobotNameResolver;
  */
 public abstract class RosAppActivity extends RosActivity {
 
-	public static final String ROBOT_DESCRIPTION_EXTRA = "ros.android.activity.RobotDescription";
+	public static final String ROBOT_DESCRIPTION_EXTRA = "ros.android.util.RobotDescription";
 	private String robotAppName = null;
 	private String defaultAppName = null;
 	private String defaultRobotName = null;
@@ -183,8 +183,13 @@ public abstract class RosAppActivity extends RosActivity {
 			}
 			dashboard.setRobotName(robotDescription.getRobotType());
 		} else {
-			dashboard.setRobotName(getRobotNameSpace().getNamespace()
-					.toString());
+			if (getRobotNameSpace().getNamespace()
+						.toString() != null) {
+				dashboard.setRobotName(getRobotNameSpace().getNamespace()
+						.toString());
+			} else {
+			dashboard.setRobotName("Pr2");
+			}
 		}		
 		nodeMainExecutor.execute(robotNameResolver,
 				nodeConfiguration.setNodeName("robotNameResolver"));
@@ -305,7 +310,9 @@ public abstract class RosAppActivity extends RosActivity {
 					public void onSuccess(StartAppResponse message) {
 						if (message.getStarted()) {
 							if (fromAppChooser == true) {
-								startingDialog.dismiss();
+								if(startingDialog != null){
+    								startingDialog.dismiss();
+								}
 							}
 							Log.i("RosAndroid", "App started successfully");
 						} else
@@ -357,6 +364,10 @@ public abstract class RosAppActivity extends RosActivity {
 		if (startApplication && !keyBackTouched) {
 			stopApp();
 		}
+		if (startingDialog != null) {
+        		startingDialog.dismiss();
+        		startingDialog = null;
+        }
 		super.onDestroy();
 	}
 

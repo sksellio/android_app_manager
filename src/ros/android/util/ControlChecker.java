@@ -159,6 +159,10 @@ public class ControlChecker {
       boolean stateFound = false;
       
       for (String i : pageLines) {
+        Log.i("ControlChecker", "??????????????????????????????");
+        Log.i("ControlChecker", "Control URI Response" + i);
+
+
         if (i.trim().indexOf(IN_USE_TAG) >= 0) {
           state = State.IN_USE;
           stateFound = true;
